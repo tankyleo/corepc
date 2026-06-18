@@ -20,6 +20,9 @@ serde_json = { version = "1.0.0", default-features = false, features = ["std"], 
 # For the proxy feature:
 base64 = { version = "0.22", default-features = false, features = ["alloc"], optional = true }
 
+log = { version = "0.4.0", default-features = false, optional = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies]
 # For rustls-based TLS:
 rustls = { version = "0.23.38", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 rustls-native-certs = { version = "0.8.3", default-features = false, optional = true }
@@ -29,12 +32,15 @@ rustls-webpki = { version = "0.103.13", default-features = false, optional = tru
 # For native-tls-based TLS:
 native-tls = { version = "0.2", default-features = false, optional = true }
 
-# For the async feature:
 tokio = { version = "1.0", default-features = false, features = ["rt", "net", "io-util", "time", "sync"], optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, optional = true }
 tokio-native-tls = { version = "0.3", default-features = false, optional = true }
 
-log = { version = "0.4.0", default-features = false, optional = true }
+[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dependencies]
+js-sys = { version = "0.3", default-features = false }
+wasm-bindgen = { version = "0.2", default-features = false }
+wasm-bindgen-futures = { version = "0.4", default-features = false }
+web-sys = { version = "0.3", default-features = false, features = ["AbortController", "AbortSignal", "Headers", "RequestInit", "Response", "Request", "ServiceWorkerGlobalScope"] }
 
 [dev-dependencies]
 tiny_http = "0.12"

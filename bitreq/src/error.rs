@@ -1,3 +1,5 @@
+#[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+use alloc::string::String;
 use core::{fmt, str};
 #[cfg(feature = "std")]
 use std::{error, io};
@@ -19,15 +21,28 @@ pub enum Error {
     /// The response body contains invalid UTF-8, so the `as_str()`
     /// conversion failed.
     InvalidUtf8InBody(str::Utf8Error),
-    #[cfg(feature = "rustls")]
+    #[cfg(all(
+        feature = "rustls",
+        not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+    ))]
     /// Ran into a rustls error while creating the connection.
     RustlsCreateConnection(rustls::Error),
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(
+        feature = "native-tls",
+        not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+    ))]
     /// Ran into a native-tls error while creating the connection.
     NativeTlsCreateConnection(native_tls::Error),
     /// Ran into an IO problem while loading the response.
     #[cfg(feature = "std")]
     IoError(io::Error),
+    /// Ran into an error while sending a browser-WASM request with `fetch`.
+    ///
+    /// Fetch rejects with JavaScript values rather than Rust `io::Error`s, so
+    /// this variant carries the best string representation available from the
+    /// rejected `JsValue`.
+    #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+    Wasm(String),
     /// Couldn't parse the incoming chunk's length while receiving a
     /// response with the header `Transfer-Encoding: chunked`.
     MalformedChunkLength,
@@ -100,11 +115,19 @@ impl fmt::Display for Error {
             SerdeJsonError(err) => write!(f, "{}", err),
             #[cfg(feature = "std")]
             IoError(err) => write!(f, "{}", err),
+            #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+            Wasm(err) => write!(f, "browser fetch error: {}", err),
             InvalidUrl(err) => write!(f, "failed to parse given URL: {}", err),
             InvalidUtf8InBody(err) => write!(f, "{}", err),
-            #[cfg(feature = "rustls")]
+            #[cfg(all(
+                feature = "rustls",
+                not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+            ))]
             RustlsCreateConnection(err) => write!(f, "error creating rustls connection: {}", err),
-            #[cfg(feature = "native-tls")]
+            #[cfg(all(
+                feature = "native-tls",
+                not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+            ))]
             NativeTlsCreateConnection(err) => write!(f, "error creating native-tls connection: {err}"),
             MalformedChunkLength => write!(f, "non-usize chunk length with transfer-encoding: chunked"),
             MalformedChunkEnd => write!(f, "chunk did not end after reading the expected amount of bytes"),
@@ -145,7 +168,10 @@ impl error::Error for Error {
             IoError(err) => Some(err),
             InvalidUrl(err) => Some(err),
             InvalidUtf8InBody(err) => Some(err),
-            #[cfg(feature = "rustls")]
+            #[cfg(all(
+                feature = "rustls",
+                not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+            ))]
             RustlsCreateConnection(err) => Some(err),
             _ => None,
         }

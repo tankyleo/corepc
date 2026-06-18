@@ -59,7 +59,7 @@
 //! that return futures for non-blocking operation.
 //!
 //! It also enables [`Client`](struct.Client.html) to reuse TCP connections
-//! across requests.
+//! across requests on native targets.
 //!
 //! ## `async-https` or `async-https-rustls`
 //!
@@ -250,26 +250,52 @@
 
 extern crate alloc;
 
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 mod client;
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 mod connection;
 mod error;
-#[cfg(feature = "proxy")]
+#[cfg(all(
+    feature = "proxy",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 mod proxy;
 #[cfg(feature = "std")]
 mod request;
 #[cfg(feature = "std")]
 mod response;
 mod url;
+#[cfg(all(
+    feature = "std",
+    target_arch = "wasm32",
+    any(target_os = "unknown", target_os = "none")
+))]
+mod wasm;
 
-#[cfg(feature = "async")]
+#[cfg(all(
+    feature = "async",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 pub use client::{Client, RequestExt};
 pub use error::*;
-#[cfg(feature = "proxy")]
+#[cfg(all(
+    feature = "proxy",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 pub use proxy::*;
 #[cfg(feature = "std")]
 pub use request::*;
 #[cfg(feature = "std")]
-pub use response::{Response, ResponseLazy};
+pub use response::Response;
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
+pub use response::ResponseLazy;
 pub use url::{ParseError as UrlParseError, Url};

@@ -1,23 +1,41 @@
 use alloc::collections::BTreeMap;
 use core::fmt;
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 use core::fmt::Write;
 use core::time::Duration;
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 use std::env;
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 use std::time::Instant;
 
-#[cfg(feature = "async")]
-use crate::connection::AsyncConnection;
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 use crate::connection::Connection;
-#[cfg(feature = "proxy")]
+#[cfg(all(
+    feature = "proxy",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 use crate::proxy::Proxy;
 #[cfg(feature = "std")]
 use crate::url::Url;
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
+use crate::ResponseLazy;
 #[cfg(feature = "std")]
-use crate::{Error, Response, ResponseLazy};
+use crate::{Error, Response};
 
 /// A URL type for requests.
 pub type URL = String;
@@ -87,15 +105,20 @@ pub struct Request {
     pub(crate) method: Method,
     url: URL,
     params: Vec<(String, String)>,
-    headers: BTreeMap<String, String>,
-    body: Option<Vec<u8>>,
+    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) body: Option<Vec<u8>>,
     timeout: Option<u64>,
     pub(crate) pipelining: bool,
     pub(crate) max_headers_size: Option<usize>,
+    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
     pub(crate) max_status_line_len: Option<usize>,
     pub(crate) max_body_size: Option<usize>,
+    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
     max_redirects: usize,
-    #[cfg(feature = "proxy")]
+    #[cfg(all(
+        feature = "proxy",
+        not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+    ))]
     pub(crate) proxy: Option<Proxy>,
 }
 
@@ -121,11 +144,22 @@ impl Request {
             // https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:net/http/http_stream_parser.h;l=164-168;drc=66941d1f0cfe9155b400aef887fe39a403c1f518
             max_headers_size: Some(256 * 1024),
             // Probably could be 128 bytes, but set conservatively for good measure.
+            #[cfg(not(all(
+                target_arch = "wasm32",
+                any(target_os = "unknown", target_os = "none")
+            )))]
             max_status_line_len: Some(64 * 1024),
             // Picked somewhat randomly
             max_body_size: Some(1024 * 1024 * 1024),
+            #[cfg(not(all(
+                target_arch = "wasm32",
+                any(target_os = "unknown", target_os = "none")
+            )))]
             max_redirects: 100,
-            #[cfg(feature = "proxy")]
+            #[cfg(all(
+                feature = "proxy",
+                not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+            ))]
             proxy: None,
         }
     }
@@ -153,9 +187,13 @@ impl Request {
     /// Sets the request body.
     pub fn with_body<T: Into<Vec<u8>>>(mut self, body: T) -> Request {
         let body = body.into();
+        #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
         let body_length = body.len();
         self.body = Some(body);
-        self.with_header("Content-Length", format!("{}", body_length))
+        let req = self;
+        #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
+        let req = req.with_header("Content-Length", format!("{}", body_length));
+        req
     }
 
     /// Adds given key and value as query parameter to request url
@@ -198,6 +236,7 @@ impl Request {
     /// cause a stack overflow if that many redirects are followed. If
     /// you have a use for so many redirects that the stack overflow
     /// becomes a problem, please open an issue.
+    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
     pub fn with_max_redirects(mut self, max_redirects: usize) -> Request {
         self.max_redirects = max_redirects;
         self
@@ -233,6 +272,7 @@ impl Request {
     /// `None` disables the cap, and may cause the program to use any
     /// amount of memory if the server responds with a long (or
     /// infinite) status line. The default is 64 KiB.
+    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
     pub fn with_max_status_line_length<S: Into<Option<usize>>>(
         mut self,
         max_status_line_len: S,
@@ -260,7 +300,10 @@ impl Request {
         self.max_body_size = max_body_size.into();
         self
     }
+}
 
+#[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
+impl Request {
     /// Sets the proxy to use.
     #[cfg(feature = "proxy")]
     pub fn with_proxy(mut self, proxy: Proxy) -> Request {
@@ -315,24 +358,6 @@ impl Request {
             .send(parsed_request)
     }
 
-    /// Sends this request to the host asynchronously.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if we run into an error while sending the
-    /// request, or receiving/parsing the response. The specific error
-    /// is described in the `Err`, and it can be any
-    /// [`bitreq::Error`](enum.Error.html) except
-    /// [`InvalidUtf8InBody`](enum.Error.html#variant.InvalidUtf8InBody).
-    #[cfg(feature = "async")]
-    pub async fn send_async(self) -> Result<Response, Error> {
-        let parsed_request = ParsedRequest::new(self)?;
-        AsyncConnection::new(parsed_request.connection_params(), parsed_request.timeout_at)
-            .await?
-            .send(parsed_request)
-            .await
-    }
-
     /// Sends this request to the host asynchronously, "loaded lazily".
     ///
     /// Note that due to API limitations the response is not actually loaded lazily - it is loaded
@@ -351,12 +376,49 @@ impl Request {
     }
 }
 
+impl Request {
+    /// Sends this request to the host asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if we run into an error while sending the
+    /// request, or receiving/parsing the response. The specific error
+    /// is described in the `Err`, and it can be any
+    /// [`bitreq::Error`](enum.Error.html) except
+    /// [`InvalidUtf8InBody`](enum.Error.html#variant.InvalidUtf8InBody).
+    #[cfg(any(
+        feature = "async",
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))
+    ))]
+    pub async fn send_async(self) -> Result<Response, Error> {
+        let parsed_request = ParsedRequest::new(self)?;
+        #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
+        {
+            crate::connection::AsyncConnection::new(
+                parsed_request.connection_params(),
+                parsed_request.timeout_at,
+            )
+            .await?
+            .send(parsed_request)
+            .await
+        }
+        #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+        {
+            crate::wasm::send(parsed_request).await
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 pub(crate) struct ParsedRequest {
     pub(crate) url: Url,
+    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
     pub(crate) redirects: Vec<Url>,
     pub(crate) config: Request,
+    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
     pub(crate) timeout_at: Option<Instant>,
+    #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+    pub(crate) timeout: Option<Duration>,
 }
 
 #[cfg(feature = "std")]
@@ -367,7 +429,11 @@ impl ParsedRequest {
         let params = config.params.iter().map(|(a, b)| (a.as_str(), b.as_str()));
         url.append_query_params(params);
 
-        #[cfg(all(feature = "proxy", feature = "std"))]
+        #[cfg(all(
+            feature = "proxy",
+            feature = "std",
+            not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+        ))]
         // Set default proxy from environment variables
         //
         // Curl documentation: https://everything.curl.dev/usingcurl/proxies/env
@@ -402,15 +468,42 @@ impl ParsedRequest {
             }
         }
 
+        #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
         let timeout = config.timeout.or_else(|| match env::var("BITREQ_TIMEOUT") {
             Ok(t) => t.parse::<u64>().ok(),
             Err(_) => None,
         });
+        #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+        let timeout = config.timeout;
+        #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
         let timeout_at = timeout.map(|t| Instant::now() + Duration::from_secs(t));
+        #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+        let timeout = timeout.map(Duration::from_secs);
 
-        Ok(ParsedRequest { url, redirects: Vec::new(), config, timeout_at })
+        Ok(ParsedRequest {
+            url,
+            #[cfg(not(all(
+                target_arch = "wasm32",
+                any(target_os = "unknown", target_os = "none")
+            )))]
+            redirects: Vec::new(),
+            config,
+            #[cfg(not(all(
+                target_arch = "wasm32",
+                any(target_os = "unknown", target_os = "none")
+            )))]
+            timeout_at,
+            #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
+            timeout,
+        })
     }
+}
 
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
+impl ParsedRequest {
     fn get_http_head(&self) -> String {
         let mut http = String::with_capacity(32);
 
@@ -531,7 +624,10 @@ impl ParsedRequest {
 
 /// A key which determines whether an existing connection can be reused
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 pub(crate) struct ConnectionParams<'a> {
     pub(crate) https: bool,
     pub(crate) host: &'a str,
@@ -540,7 +636,10 @@ pub(crate) struct ConnectionParams<'a> {
     pub(crate) proxy: Option<&'a Proxy>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 impl<'a> ConnectionParams<'a> {
     fn from_request(request: &'a ParsedRequest) -> Self {
         Self {
@@ -554,7 +653,10 @@ impl<'a> ConnectionParams<'a> {
 }
 
 /// A [`ConnectionParams`] without references.
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct OwnedConnectionParams {
     pub(crate) https: bool,
@@ -564,7 +666,10 @@ pub(crate) struct OwnedConnectionParams {
     pub(crate) proxy: Option<Proxy>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 impl PartialEq<ConnectionParams<'_>> for OwnedConnectionParams {
     fn eq(&self, other: &ConnectionParams<'_>) -> bool {
         if self.https != other.https || self.host != other.host || self.port != other.port {
@@ -581,7 +686,10 @@ impl PartialEq<ConnectionParams<'_>> for OwnedConnectionParams {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(
+    feature = "std",
+    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))
+))]
 impl From<ConnectionParams<'_>> for OwnedConnectionParams {
     fn from(other: ConnectionParams<'_>) -> Self {
         Self {
