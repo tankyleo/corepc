@@ -28,7 +28,10 @@ pub mod http;
 
 #[cfg(feature = "bitreq_http")]
 pub use http::bitreq_http;
-#[cfg(feature = "bitreq_http_async")]
+#[cfg(all(
+    feature = "bitreq_http_async",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 pub use http::bitreq_http_async;
 #[cfg(feature = "simple_http")]
 pub use http::simple_http;

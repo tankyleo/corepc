@@ -6,7 +6,7 @@ pub mod simple_http;
 #[cfg(feature = "bitreq_http")]
 pub mod bitreq_http;
 
-#[cfg(feature = "bitreq_http_async")]
+#[cfg(all(feature = "bitreq_http_async", not(all(target_arch = "wasm32", target_os = "unknown"))))]
 pub mod bitreq_http_async;
 
 /// The default TCP port to use for connections.
