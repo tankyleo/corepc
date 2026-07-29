@@ -30,11 +30,10 @@ pub enum Error {
     /// Ran into an IO problem while loading the response.
     #[cfg(feature = "std")]
     IoError(io::Error),
-    /// Ran into an error while sending a browser-WASM request with `fetch`.
+    /// Ran into an error while sending a request on a WASM target.
     ///
-    /// Fetch rejects with JavaScript values rather than Rust `io::Error`s, so
-    /// this variant carries the best string representation available from the
-    /// rejected `JsValue`.
+    /// This variant carries the best string representation provided by the
+    /// configured WASM transport.
     #[cfg(bitreq_wasm)]
     Wasm(String),
     /// Couldn't parse the incoming chunk's length while receiving a
@@ -49,8 +48,7 @@ pub enum Error {
     /// The response contains headers whose total size surpasses
     /// [Request::with_max_headers_size](crate::request::Request::with_max_headers_size).
     HeadersOverflow,
-    /// The response's status line length surpasses
-    /// [Request::with_max_status_line_size](crate::request::Request::with_max_status_line_length).
+    /// The response status line surpasses the configured maximum length.
     StatusLineOverflow,
     /// [ToSocketAddrs](std::net::ToSocketAddrs) did not resolve to an
     /// address.
@@ -71,8 +69,8 @@ pub enum Error {
     /// `https://`), but the crate's `https` feature was not enabled,
     /// and as such, a connection cannot be made.
     HttpsFeatureNotEnabled,
-    /// The provided proxy information was not properly formatted. See
-    /// [Proxy](crate::Proxy) methods for the valid format.
+    /// The provided proxy information was not properly formatted. See the
+    /// `Proxy` methods for the valid format.
     #[cfg(feature = "proxy")]
     BadProxy,
     /// The provided credentials were rejected by the proxy server.
@@ -110,7 +108,7 @@ impl fmt::Display for Error {
             #[cfg(feature = "std")]
             IoError(err) => write!(f, "{}", err),
             #[cfg(bitreq_wasm)]
-            Wasm(err) => write!(f, "browser fetch error: {}", err),
+            Wasm(err) => write!(f, "WASM transport error: {}", err),
             InvalidUrl(err) => write!(f, "failed to parse given URL: {}", err),
             InvalidUtf8InBody(err) => write!(f, "{}", err),
             #[cfg(all(

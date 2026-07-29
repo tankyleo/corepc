@@ -61,6 +61,12 @@
 //! It also enables [`Client`](struct.Client.html) to reuse TCP connections
 //! across requests on native targets.
 //!
+//! ## `wasm-bindgen`
+//!
+//! This feature provides a browser Fetch API transport on
+//! `wasm32-unknown-unknown`. Without it, install runtime-specific handlers with
+//! `bitreq::wasm::set_handlers` before sending requests.
+//!
 //! ## `async-https` or `async-https-rustls`
 //!
 //! Like `https` or `https-rustls` but also uses
@@ -267,7 +273,9 @@ mod request;
 mod response;
 mod url;
 #[cfg(all(feature = "std", bitreq_wasm))]
-mod wasm;
+pub mod wasm;
+#[cfg(all(feature = "std", feature = "wasm-bindgen", bitreq_wasm))]
+mod wasm_bindgen;
 
 #[cfg(all(feature = "async", not(bitreq_wasm)))]
 pub use client::{Client, RequestExt};

@@ -38,11 +38,11 @@ tokio-rustls = { version = "0.26.4", default-features = false, optional = true }
 tokio-native-tls = { version = "0.3", default-features = false, optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-js-sys = { version = "0.3", default-features = false }
+js-sys = { version = "0.3", default-features = false, optional = true }
 # Keep the wasm-bindgen family compatible with this crate's MSRV.
-wasm-bindgen = { version = ">=0.2, <0.2.118", default-features = false }
-wasm-bindgen-futures = { version = "0.4", default-features = false }
-web-sys = { version = "0.3", default-features = false, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestInit", "Response", "Request", "ServiceWorkerGlobalScope"] }
+wasm-bindgen = { version = ">=0.2, <0.2.118", default-features = false, optional = true }
+wasm-bindgen-futures = { version = "0.4", default-features = false, optional = true }
+web-sys = { version = "0.3", default-features = false, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestInit", "Response", "Request", "ServiceWorkerGlobalScope"], optional = true }
 
 [target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies]
 tiny_http = "0.12"
@@ -52,6 +52,7 @@ url = { version = "2.4" }
 
 [package.metadata.docs.rs]
 all-features = true
+additional-targets = ["wasm32-unknown-unknown"]
 
 [package.metadata.rbmt.lint]
 # Unavoidable TLS/crypto dep-graph version conflicts.
@@ -64,6 +65,8 @@ std = []
 log = ["dep:log"]
 json-using-serde = ["serde", "serde_json"]
 proxy = ["base64", "std"]
+
+wasm-bindgen = ["std", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 
 https = ["https-rustls"]
 https-rustls = ["rustls", "webpki-roots", "rustls-webpki"]

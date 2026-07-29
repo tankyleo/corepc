@@ -1,226 +1,243 @@
-// This module is adapted from reqwest's wasm backend:
-// https://github.com/seanmonstar/reqwest
+//! Configurable transport hooks for WASM targets.
+//!
+//! Enable the `wasm-bindgen` feature to use the browser Fetch API. Runtimes that
+//! do not use `wasm-bindgen` must install their own handlers before sending the
+//! first request.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::format;
-use alloc::rc::Rc;
-use alloc::string::{String, ToString};
-use core::cell::Cell;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
 use core::time::Duration;
-use std::io;
+use std::sync::OnceLock;
 
-use js_sys::{Function, Promise, Uint8Array};
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::prelude::{wasm_bindgen, UnwrapThrowExt};
-use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{AbortController, AbortSignal, Headers, ReadableStreamDefaultReader, RequestInit};
+use crate::request::ParsedRequest;
+use crate::{Error, Method};
 
-use crate::request::{Method, ParsedRequest};
-use crate::{Error, Response};
+/// The future returned by a WASM request handler.
+pub type SendFuture = Pin<Box<dyn Future<Output = Result<Response, Error>>>>;
 
-fn wasm_error(value: JsValue) -> Error { Error::Wasm(format!("{value:?}")) }
+/// Function used to send a request in a WASM runtime.
+///
+/// The handler must enforce [`Request::timeout`]. It should also enforce the
+/// response size limits while reading so oversized responses are not fully
+/// buffered; bitreq validates both limits again after the handler returns.
+pub type SendHandler = fn(Request) -> SendFuture;
 
-fn timeout_error() -> Error {
-    Error::IoError(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "the timeout of the request was reached",
+/// Runtime-specific handlers used to send WASM requests.
+#[derive(Clone, Copy, Debug)]
+pub struct Handlers {
+    send: SendHandler,
+}
+
+impl Handlers {
+    /// Creates a handler set from a request function.
+    pub const fn new(send: SendHandler) -> Self { Self { send } }
+}
+
+/// A request passed to the configured WASM transport.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub struct Request {
+    /// HTTP method.
+    pub method: Method,
+    /// Fully parsed URL, including encoded query parameters.
+    pub url: String,
+    /// Request headers.
+    pub headers: BTreeMap<String, String>,
+    /// Optional request body.
+    pub body: Option<Vec<u8>>,
+    /// Optional request timeout, which the handler must enforce.
+    pub timeout: Option<Duration>,
+    /// Maximum total response-header size.
+    ///
+    /// Handlers should enforce this while receiving headers.
+    pub max_headers_size: Option<usize>,
+    /// Maximum response-body size.
+    ///
+    /// Handlers should enforce this while receiving the body.
+    pub max_body_size: Option<usize>,
+}
+
+/// A response returned by a configured WASM transport.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub struct Response {
+    /// HTTP status code.
+    pub status_code: i32,
+    /// HTTP reason phrase.
+    pub reason_phrase: String,
+    /// Response headers.
+    ///
+    /// Bitreq normalizes field names to lowercase before exposing the response.
+    pub headers: BTreeMap<String, String>,
+    /// Final response URL.
+    pub url: String,
+    /// Response body.
+    ///
+    /// Bitreq discards this for `HEAD`, 204, and 304 responses.
+    pub body: Vec<u8>,
+}
+
+impl Response {
+    /// Creates a response from transport-provided parts.
+    pub fn new(
+        status_code: i32,
+        reason_phrase: String,
+        headers: BTreeMap<String, String>,
+        url: String,
+        body: Vec<u8>,
+    ) -> Self {
+        Self { status_code, reason_phrase, headers, url, body }
+    }
+}
+
+static HANDLERS: OnceLock<Handlers> = OnceLock::new();
+
+/// Installs the handlers used for WASM requests.
+///
+/// Call this before sending the first request. The handlers can only be set once.
+///
+/// # Errors
+///
+/// Returns the supplied handlers if handlers were already installed or the
+/// built-in browser handlers were already used.
+pub fn set_handlers(handlers: Handlers) -> Result<(), Handlers> { HANDLERS.set(handlers) }
+
+fn handlers() -> Result<&'static Handlers, Error> {
+    if let Some(handlers) = HANDLERS.get() {
+        return Ok(handlers);
+    }
+
+    #[cfg(feature = "wasm-bindgen")]
+    {
+        Ok(HANDLERS.get_or_init(crate::wasm_bindgen::handlers))
+    }
+    #[cfg(not(feature = "wasm-bindgen"))]
+    {
+        Err(Error::Wasm(String::from(
+            "no WASM handlers installed; call bitreq::wasm::set_handlers",
+        )))
+    }
+}
+
+pub(crate) async fn send(request: ParsedRequest) -> Result<crate::Response, Error> {
+    let method = request.config.method.clone();
+    let max_headers_size = request.config.max_headers_size;
+    let max_body_size = request.config.max_body_size;
+    let request = Request {
+        method: request.config.method,
+        url: String::from(request.url.as_str()),
+        headers: request.config.headers,
+        body: request.config.body,
+        timeout: request.timeout,
+        max_headers_size,
+        max_body_size,
+    };
+    let response = (handlers()?.send)(request).await?;
+
+    finalize_response(method, max_headers_size, max_body_size, response)
+}
+
+fn finalize_response(
+    method: Method,
+    max_headers_size: Option<usize>,
+    max_body_size: Option<usize>,
+    mut response: Response,
+) -> Result<crate::Response, Error> {
+    if let Some(max) = max_headers_size {
+        let headers_size = response.headers.iter().try_fold(0usize, |total, (name, value)| {
+            total.checked_add(name.len())?.checked_add(value.len())?.checked_add(4)
+        });
+        if match headers_size {
+            Some(size) => size > max,
+            None => true,
+        } {
+            return Err(Error::HeadersOverflow);
+        }
+    }
+
+    let mut headers = BTreeMap::new();
+    for (mut name, value) in response.headers {
+        name.make_ascii_lowercase();
+        headers.insert(name, value);
+    }
+    response.headers = headers;
+
+    if method == Method::Head || response.status_code == 204 || response.status_code == 304 {
+        response.body.clear();
+    }
+    if max_body_size.is_some_and(|max| response.body.len() > max) {
+        return Err(Error::BodyOverflow);
+    }
+
+    Ok(crate::Response::from_parts(
+        response.status_code,
+        response.reason_phrase,
+        response.headers,
+        response.url,
+        response.body,
     ))
 }
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = "setTimeout")]
-    fn set_timeout(handler: &Function, timeout: i32) -> JsValue;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    #[wasm_bindgen(js_name = "clearTimeout")]
-    fn clear_timeout(handle: JsValue) -> JsValue;
-}
-
-async fn promise<T, F>(promise: js_sys::Promise, map_rejection: F) -> Result<T, Error>
-where
-    T: JsCast,
-    F: FnOnce(JsValue) -> Error,
-{
-    let js_val = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(map_rejection)?;
-
-    js_val
-        .dyn_into::<T>()
-        .map_err(|_js_val| Error::Wasm(String::from("promise resolved to unexpected type")))
-}
-
-struct AbortGuard {
-    ctrl: AbortController,
-    timed_out: Rc<Cell<bool>>,
-    timeout: Option<(JsValue, Closure<dyn FnMut()>)>,
-}
-
-impl AbortGuard {
-    fn new() -> Result<Self, Error> {
-        Ok(AbortGuard {
-            ctrl: AbortController::new().map_err(wasm_error)?,
-            timed_out: Rc::new(Cell::new(false)),
-            timeout: None,
-        })
+    fn response() -> Response {
+        Response::new(
+            200,
+            String::from("OK"),
+            BTreeMap::from([(String::from("Content-Type"), String::from("text/plain"))]),
+            String::from("https://example.com/"),
+            vec![1, 2, 3],
+        )
     }
 
-    fn signal(&self) -> AbortSignal { self.ctrl.signal() }
+    #[test]
+    fn normalizes_response_headers() {
+        let response = finalize_response(Method::Get, None, None, response()).unwrap();
 
-    fn timeout(&mut self, timeout: Duration) {
-        let ctrl = self.ctrl.clone();
-        let timed_out = Rc::clone(&self.timed_out);
-        let abort = Closure::once(move || {
-            timed_out.set(true);
-            ctrl.abort();
-        });
-        let timeout = set_timeout(
-            abort.as_ref().unchecked_ref::<js_sys::Function>(),
-            timeout.as_millis().try_into().unwrap_or(i32::MAX),
-        );
-        if let Some((id, _)) = self.timeout.replace((timeout, abort)) {
-            clear_timeout(id);
+        assert_eq!(response.headers.get("content-type"), Some(&String::from("text/plain")));
+        assert!(!response.headers.contains_key("Content-Type"));
+    }
+
+    #[test]
+    fn counts_headers_before_normalizing_names() {
+        let mut input = response();
+        input.headers = BTreeMap::from([
+            (String::from("X-Test"), String::from("a")),
+            (String::from("x-test"), String::from("b")),
+        ]);
+
+        assert!(matches!(
+            finalize_response(Method::Get, Some(11), None, input),
+            Err(Error::HeadersOverflow)
+        ));
+    }
+
+    #[test]
+    fn discards_body_when_http_semantics_require_it() {
+        for (method, status_code) in [(Method::Head, 200), (Method::Get, 204), (Method::Get, 304)] {
+            let mut input = response();
+            input.status_code = status_code;
+
+            let response = finalize_response(method, None, Some(0), input).unwrap();
+            assert!(response.as_bytes().is_empty());
         }
     }
 
-    fn map_rejection(&self, value: JsValue) -> Error {
-        if self.timed_out.get() {
-            timeout_error()
-        } else {
-            wasm_error(value)
-        }
+    #[test]
+    fn rejects_oversized_response() {
+        assert!(matches!(
+            finalize_response(Method::Get, Some(0), None, response()),
+            Err(Error::HeadersOverflow)
+        ));
+        assert!(matches!(
+            finalize_response(Method::Get, None, Some(2), response()),
+            Err(Error::BodyOverflow)
+        ));
     }
-}
-
-impl Drop for AbortGuard {
-    fn drop(&mut self) {
-        self.ctrl.abort();
-        if let Some((id, _)) = self.timeout.take() {
-            clear_timeout(id);
-        }
-    }
-}
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_name = fetch)]
-    fn fetch_with_request(input: &web_sys::Request) -> Promise;
-}
-
-fn js_fetch(req: &web_sys::Request) -> Promise {
-    let global = js_sys::global();
-
-    if let Some(scope) = global.dyn_ref::<web_sys::ServiceWorkerGlobalScope>() {
-        scope.fetch_with_request(req)
-    } else {
-        fetch_with_request(req)
-    }
-}
-
-async fn read_body(
-    response: &web_sys::Response,
-    max_body_size: Option<usize>,
-    abort: &AbortGuard,
-) -> Result<Vec<u8>, Error> {
-    let Some(body) = response.body() else {
-        return Ok(Vec::new());
-    };
-
-    let reader: ReadableStreamDefaultReader = body
-        .get_reader()
-        .dyn_into()
-        .map_err(|_| Error::Wasm(String::from("response body reader is unexpected type")))?;
-
-    let done_key = JsValue::from_str("done");
-    let value_key = JsValue::from_str("value");
-    let mut bytes = Vec::new();
-    loop {
-        let item: js_sys::Object =
-            promise(reader.read(), |value| abort.map_rejection(value)).await?;
-        let done = js_sys::Reflect::get(item.as_ref(), &done_key)
-            .map_err(wasm_error)?
-            .as_bool()
-            .unwrap_or(false);
-        if done {
-            break;
-        }
-
-        let chunk: Uint8Array = js_sys::Reflect::get(item.as_ref(), &value_key)
-            .map_err(wasm_error)?
-            .dyn_into()
-            .map_err(|_| Error::Wasm(String::from("response body chunk is unexpected type")))?;
-        let chunk_len = chunk.length() as usize;
-        if max_body_size.is_some_and(|max| bytes.len().saturating_add(chunk_len) > max) {
-            return Err(Error::BodyOverflow);
-        }
-
-        let offset = bytes.len();
-        bytes.resize(offset + chunk_len, 0);
-        chunk.copy_to(&mut bytes[offset..]);
-    }
-
-    reader.release_lock();
-    Ok(bytes)
-}
-
-pub(crate) async fn send(request: ParsedRequest) -> Result<Response, Error> {
-    let init = RequestInit::new();
-    init.set_method(&request.config.method.to_string());
-
-    let js_headers = Headers::new().map_err(wasm_error)?;
-    for (key, value) in &request.config.headers {
-        js_headers.append(key, value).map_err(wasm_error)?;
-    }
-    init.set_headers(&js_headers);
-
-    if let Some(body) = request.config.body {
-        if !body.is_empty() {
-            init.set_body(&JsValue::from(body));
-        }
-    }
-
-    let mut abort = AbortGuard::new()?;
-    if let Some(timeout) = request.timeout {
-        abort.timeout(timeout);
-    }
-    init.set_signal(Some(&abort.signal()));
-
-    let js_req =
-        web_sys::Request::new_with_str_and_init(request.url.as_str(), &init).map_err(wasm_error)?;
-    let p = js_fetch(&js_req);
-    let response: web_sys::Response = promise(p, |value| abort.map_rejection(value)).await?;
-
-    let status_code = i32::from(response.status());
-    let reason_phrase = response.status_text();
-    let url = response.url();
-    let js_headers = response.headers();
-    let mut remaining_headers_size = request.config.max_headers_size;
-    let mut headers = BTreeMap::new();
-    for item in js_headers.entries() {
-        let item = item.expect_throw("headers iterator doesn't throw");
-        let item: js_sys::Array = item.dyn_into().expect_throw("header item is an array");
-
-        let name = item.get(0).as_string().expect_throw("header name is a string");
-
-        let value = item.get(1).as_string().expect_throw("header value is a string");
-
-        if let Some(remaining) = remaining_headers_size.as_mut() {
-            let header_size = name.len().saturating_add(value.len()).saturating_add(4);
-            if header_size > *remaining {
-                return Err(Error::HeadersOverflow);
-            }
-            *remaining -= header_size;
-        }
-
-        headers.insert(name, value);
-    }
-
-    let should_read_body =
-        request.config.method != Method::Head && status_code != 204 && status_code != 304;
-
-    let bytes = if should_read_body {
-        read_body(&response, request.config.max_body_size, &abort).await?
-    } else {
-        Vec::new()
-    };
-
-    Ok(Response::from_parts(status_code, reason_phrase, headers, url, bytes))
 }

@@ -10,7 +10,9 @@ different goals. Many thanks to the original author.
 Simple, minimal-dependency HTTP client. Optional features for http
 proxies (`proxy`), async support (`async`, `async-https`), and https
 with various TLS implementations (`https-rustls`, `https-rustls-probe`,
-and `https` which is an alias for `https-rustls`).
+and `https` which is an alias for `https-rustls`). On
+`wasm32-unknown-unknown`, enable `wasm-bindgen` for the browser Fetch API
+transport or configure custom `bitreq::wasm` handlers.
 
 Without any optional features, my casual testing indicates about 100
 KB additional executable size for stripped release builds using this
